@@ -157,6 +157,8 @@ macro_rules! sr_options_spec {
                     (false, batching, "batching"),
                 deterministic:
                     (false, deterministic, "deterministic"),
+                use_interval_targets:
+                    (false, use_interval_targets, "use-interval-targets"),
             }
         }
     };

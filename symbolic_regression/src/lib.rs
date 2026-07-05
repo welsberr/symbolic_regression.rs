@@ -38,7 +38,10 @@ pub use complexity::compute_complexity;
 pub use dataset::{Dataset, TaggedDataset};
 pub use dynamic_expressions::{OperatorSelectError, Operators, op, opset};
 pub use hall_of_fame::HallOfFame;
-pub use loss_functions::{LossKind, epsilon_insensitive, huber, log_cosh, lp, mae, make_loss, mse, quantile, rmse};
+pub use loss_functions::{
+    LossKind, epsilon_insensitive, huber, interval_mse_dloss_dyhat, interval_mse_loss, log_cosh, lp, mae, make_loss,
+    mse, quantile, rmse,
+};
 pub use operator_library::OperatorLibrary;
 pub use operator_selection::OperatorsSampling;
 pub use options::{EarlyStop, EarlyStopCondition, MutationWeights, Options, OutputStyle, WasmOptionsShim};

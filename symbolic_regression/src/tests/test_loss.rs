@@ -58,3 +58,21 @@ fn make_loss_kind_dispatches() {
     let l = loss_functions::make_loss::<f64>(loss_functions::LossKind::Mae).loss(&yhat, &y, None);
     assert_close(l, 4.0 / 3.0, 1e-12);
 }
+
+#[test]
+fn interval_mse_is_zero_inside_bounds_and_weighted_outside() {
+    let low = [0.0_f64, 1.0, 2.0];
+    let high = [1.0_f64, 2.0, 3.0];
+    let yhat = [0.5_f64, 4.0, 1.0];
+    let w = [1.0_f64, 2.0, 1.0];
+
+    let l = loss_functions::interval_mse_loss(&yhat, &low, &high, Some(&w));
+    // residuals: [0, 2, -1], weighted squared sum = 0 + 2*4 + 1 = 9, sum_w = 4
+    assert_close(l, 9.0 / 4.0, 1e-12);
+
+    let mut grad = [0.0_f64; 3];
+    loss_functions::interval_mse_dloss_dyhat(&yhat, &low, &high, Some(&w), &mut grad);
+    assert_close(grad[0], 0.0, 1e-12);
+    assert_close(grad[1], 2.0, 1e-12);
+    assert_close(grad[2], -0.5, 1e-12);
+}

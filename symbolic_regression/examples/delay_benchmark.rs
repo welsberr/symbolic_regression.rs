@@ -50,20 +50,24 @@ fn feature_names(headers: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn arrays(frame: &Frame, features: &[String]) -> (Array2<f32>, Array1<f32>, Array1<f32>) {
+fn arrays(frame: &Frame, features: &[String]) -> (Array2<f32>, Array1<f32>, Array1<f32>, Array1<f32>, Array1<f32>) {
     let columns = column_map(&frame.headers);
     let n_rows = frame.rows.len();
     let mut x = Array2::<f32>::zeros((features.len(), n_rows));
     let mut y = Array1::<f32>::zeros(n_rows);
     let mut w = Array1::<f32>::zeros(n_rows);
+    let mut target_low = Array1::<f32>::zeros(n_rows);
+    let mut target_high = Array1::<f32>::zeros(n_rows);
     for (row_idx, row) in frame.rows.iter().enumerate() {
         for (feature_idx, feature) in features.iter().enumerate() {
             x[(feature_idx, row_idx)] = row[columns[feature.as_str()]];
         }
         y[row_idx] = row[columns["target"]];
         w[row_idx] = row[columns["weight"]];
+        target_low[row_idx] = row[columns["target_low"]];
+        target_high[row_idx] = row[columns["target_high"]];
     }
-    (x, y, w)
+    (x, y, w, target_low, target_high)
 }
 
 fn mse(pred: &[f32], y: &Array1<f32>, valid_start: usize) -> f64 {
@@ -101,6 +105,27 @@ fn r2(pred: &[f32], y: &Array1<f32>, valid_start: usize) -> f64 {
     1.0 - ss_res / ss_tot
 }
 
+fn interval_mse(pred: &[f32], low: &Array1<f32>, high: &Array1<f32>, valid_start: usize) -> f64 {
+    let pred = &pred[valid_start..];
+    let low = &low.as_slice().unwrap()[valid_start..];
+    let high = &high.as_slice().unwrap()[valid_start..];
+    pred.iter()
+        .zip(low.iter())
+        .zip(high.iter())
+        .map(|((&p, &lo), &hi)| {
+            let err = if p < lo {
+                (p - lo) as f64
+            } else if p > hi {
+                (p - hi) as f64
+            } else {
+                0.0
+            };
+            err * err
+        })
+        .sum::<f64>()
+        / pred.len() as f64
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut train_path = String::new();
@@ -114,6 +139,7 @@ fn main() {
     let mut max_delay = 0usize;
     let mut delay_probability = 0.0f64;
     let mut parsimony = 0.0f64;
+    let mut use_interval_targets = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--train" => train_path = args.next().expect("--train requires a path"),
@@ -181,6 +207,7 @@ fn main() {
                     .parse()
                     .expect("bad --parsimony")
             }
+            "--interval-targets" => use_interval_targets = true,
             other => panic!("unknown argument: {other}"),
         }
     }
@@ -190,10 +217,21 @@ fn main() {
     let train = read_csv(&train_path);
     let test = read_csv(&test_path);
     let features = feature_names(&train.headers);
-    let (x_train, y_train, weights) = arrays(&train, &features);
-    let (x_test, y_test, _) = arrays(&test, &features);
+    let (x_train, y_train, weights, target_low, target_high) = arrays(&train, &features);
+    let (x_test, y_test, _, test_low, test_high) = arrays(&test, &features);
 
-    let dataset = Dataset::with_weights_and_names(x_train, y_train, Some(weights), features.clone());
+    let dataset = if use_interval_targets {
+        Dataset::with_weights_names_and_bounds(
+            x_train,
+            y_train,
+            Some(weights),
+            features.clone(),
+            target_low,
+            target_high,
+        )
+    } else {
+        Dataset::with_weights_and_names(x_train, y_train, Some(weights), features.clone())
+    };
     let operators = BuiltinOpsF32::from_names(["cos", "sin", "+", "sub", "*", "/"]).unwrap();
     let options = Options::<f32, D> {
         seed: 1009,
@@ -206,6 +244,7 @@ fn main() {
         max_delay,
         delay_probability,
         parsimony,
+        use_interval_targets,
         maxdepth: 8,
         progress: false,
         deterministic: true,
@@ -238,6 +277,10 @@ fn main() {
     println!("  \"valid_start\": {},", valid_start);
     println!("  \"test_mse\": {},", mse(&pred, &y_test, valid_start));
     println!("  \"test_r2\": {},", r2(&pred, &y_test, valid_start));
+    println!(
+        "  \"test_interval_mse\": {},",
+        interval_mse(&pred, &test_low, &test_high, valid_start)
+    );
     println!("  \"prediction_complete\": {}", complete);
     println!("}}");
 }

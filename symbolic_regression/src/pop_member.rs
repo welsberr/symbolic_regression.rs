@@ -11,7 +11,7 @@ use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::complexity::compute_complexity;
 use crate::dataset::TaggedDataset;
-use crate::loss_functions::loss_to_cost;
+use crate::loss_functions::{interval_mse_loss, loss_to_cost};
 use crate::options::Options;
 
 #[derive(Debug)]
@@ -153,9 +153,18 @@ where
 
         let max_delay = node_utils::max_delay(&self.expr.nodes);
         let loss = if max_delay == 0 {
-            options
-                .loss
-                .loss(&evaluator.yhat, dataset.y.as_slice().unwrap(), dataset.weights_slice())
+            if options.use_interval_targets {
+                let Some((low, high)) = dataset.target_bounds_slice() else {
+                    self.loss = T::infinity();
+                    self.cost = T::infinity();
+                    return false;
+                };
+                interval_mse_loss(&evaluator.yhat, low, high, dataset.weights_slice())
+            } else {
+                options
+                    .loss
+                    .loss(&evaluator.yhat, dataset.y.as_slice().unwrap(), dataset.weights_slice())
+            }
         } else if dataset.sequence_ids.is_none() {
             let valid_start = max_delay.min(dataset.n_rows);
             if valid_start >= dataset.n_rows {
@@ -168,11 +177,25 @@ where
                 .as_ref()
                 .and_then(|w| w.as_slice())
                 .map(|w| &w[valid_start..]);
-            options.loss.loss(
-                &evaluator.yhat[valid_start..],
-                &dataset.y.as_slice().unwrap()[valid_start..],
-                weights,
-            )
+            if options.use_interval_targets {
+                let Some((low, high)) = dataset.target_bounds_slice() else {
+                    self.loss = T::infinity();
+                    self.cost = T::infinity();
+                    return false;
+                };
+                interval_mse_loss(
+                    &evaluator.yhat[valid_start..],
+                    &low[valid_start..],
+                    &high[valid_start..],
+                    weights,
+                )
+            } else {
+                options.loss.loss(
+                    &evaluator.yhat[valid_start..],
+                    &dataset.y.as_slice().unwrap()[valid_start..],
+                    weights,
+                )
+            }
         } else {
             if !dataset.has_valid_delay_rows(max_delay) {
                 self.loss = T::infinity();
@@ -192,11 +215,20 @@ where
                     T::zero()
                 };
             }
-            options.loss.loss(
-                &evaluator.yhat,
-                dataset.y.as_slice().unwrap(),
-                Some(&evaluator.loss_weights),
-            )
+            if options.use_interval_targets {
+                let Some((low, high)) = dataset.target_bounds_slice() else {
+                    self.loss = T::infinity();
+                    self.cost = T::infinity();
+                    return false;
+                };
+                interval_mse_loss(&evaluator.yhat, low, high, Some(&evaluator.loss_weights))
+            } else {
+                options.loss.loss(
+                    &evaluator.yhat,
+                    dataset.y.as_slice().unwrap(),
+                    Some(&evaluator.loss_weights),
+                )
+            }
         };
         if loss.is_nan() {
             self.loss = loss;

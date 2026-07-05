@@ -125,7 +125,11 @@ pub fn run_constant_opt_linear(env: &ConstantOptLinearEnv) -> (bool, f64, Vec<f6
     let mut evaluator = Evaluator::new(env.dataset.n_rows);
     let mut grad_ctx = dynamic_expressions::GradContext::new(env.dataset.n_rows);
     let baseline_loss = if env.options.use_baseline {
-        baseline_loss_from_zero_expression::<T, Ops, D>(&env.dataset, env.options.loss.as_ref())
+        baseline_loss_from_zero_expression::<T, Ops, D>(
+            &env.dataset,
+            env.options.loss.as_ref(),
+            env.options.use_interval_targets,
+        )
     } else {
         None
     };

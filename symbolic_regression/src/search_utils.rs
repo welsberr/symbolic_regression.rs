@@ -140,7 +140,7 @@ where
     validate_delay_options(options);
 
     let baseline_loss = if options.use_baseline {
-        baseline_loss_from_zero_expression::<T, Ops, D>(dataset, options.loss.as_ref())
+        baseline_loss_from_zero_expression::<T, Ops, D>(dataset, options.loss.as_ref(), options.use_interval_targets)
     } else {
         None
     };
@@ -393,7 +393,11 @@ where
         validate_delay_options(&options);
 
         let baseline_loss = if options.use_baseline {
-            baseline_loss_from_zero_expression::<T, Ops, D>(&dataset, options.loss.as_ref())
+            baseline_loss_from_zero_expression::<T, Ops, D>(
+                &dataset,
+                options.loss.as_ref(),
+                options.use_interval_targets,
+            )
         } else {
             None
         };
