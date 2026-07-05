@@ -10,6 +10,7 @@ use symbolic_regression::prelude::*;
 const D: usize = 3;
 
 struct Args {
+    config: Option<String>,
     train: String,
     test: Option<String>,
     target: String,
@@ -104,6 +105,11 @@ fn main() {
     println!("{{");
     println!("  \"engine\": \"sr.rs\",");
     println!("  \"status\": \"ok\",");
+    if let Some(config) = &args.config {
+        println!("  \"config\": {},", json_string(config));
+    } else {
+        println!("  \"config\": null,");
+    }
     println!("  \"wall_seconds\": {elapsed},");
     println!("  \"feature_columns\": {},", json_string_array(&features));
     println!("  \"unary_operators\": {},", json_string_array(&args.unary_operators));
@@ -175,8 +181,82 @@ fn main() {
 }
 
 fn parse_args() -> Args {
-    let mut args = std::env::args().skip(1);
-    let mut out = Args {
+    let argv = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut out = default_args();
+
+    if let Some(path) = config_path(&argv) {
+        apply_config(&path, &mut out);
+        out.config = Some(path);
+    }
+
+    let mut idx = 0;
+    while idx < argv.len() {
+        let arg = &argv[idx];
+        match arg.as_str() {
+            "--config" => {
+                idx += 2;
+                continue;
+            }
+            "--train" => out.train = value_at(&argv, idx, "--train"),
+            "--test" => out.test = Some(value_at(&argv, idx, "--test")),
+            "--target" => out.target = value_at(&argv, idx, "--target"),
+            "--features" => out.features = Some(parse_csv_list(&value_at(&argv, idx, "--features"))),
+            "--weight" => out.weight = Some(value_at(&argv, idx, "--weight")),
+            "--target-low" => out.target_low = Some(value_at(&argv, idx, "--target-low")),
+            "--target-high" => out.target_high = Some(value_at(&argv, idx, "--target-high")),
+            "--sequence-id" => out.sequence_id = Some(value_at(&argv, idx, "--sequence-id")),
+            "--niterations" => {
+                out.niterations = parse_value_str(&value_at(&argv, idx, "--niterations"), "--niterations")
+            }
+            "--populations" => {
+                out.populations = parse_value_str(&value_at(&argv, idx, "--populations"), "--populations")
+            }
+            "--population-size" => {
+                out.population_size = parse_value_str(&value_at(&argv, idx, "--population-size"), "--population-size")
+            }
+            "--cycles" => out.cycles = parse_value_str(&value_at(&argv, idx, "--cycles"), "--cycles"),
+            "--optimizer-iterations" => {
+                out.optimizer_iterations = parse_value_str(
+                    &value_at(&argv, idx, "--optimizer-iterations"),
+                    "--optimizer-iterations",
+                )
+            }
+            "--maxsize" => out.maxsize = parse_value_str(&value_at(&argv, idx, "--maxsize"), "--maxsize"),
+            "--maxdepth" => out.maxdepth = parse_value_str(&value_at(&argv, idx, "--maxdepth"), "--maxdepth"),
+            "--max-delay" => out.max_delay = parse_value_str(&value_at(&argv, idx, "--max-delay"), "--max-delay"),
+            "--delay-probability" => {
+                out.delay_probability =
+                    parse_value_str(&value_at(&argv, idx, "--delay-probability"), "--delay-probability")
+            }
+            "--parsimony" => out.parsimony = parse_value_str(&value_at(&argv, idx, "--parsimony"), "--parsimony"),
+            "--seed" => out.seed = parse_value_str(&value_at(&argv, idx, "--seed"), "--seed"),
+            "--interval-targets" => {
+                out.interval_targets = true;
+                idx += 1;
+                continue;
+            }
+            "--unary-operators" => {
+                out.unary_operators = parse_operator_string(&value_at(&argv, idx, "--unary-operators"))
+            }
+            "--binary-operators" => {
+                out.binary_operators = parse_operator_string(&value_at(&argv, idx, "--binary-operators"))
+            }
+            "--selection" => out.selection = parse_selection(&value_at(&argv, idx, "--selection")),
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            other => panic!("unknown argument: {other}"),
+        }
+        idx += 2;
+    }
+
+    finalize_args(out)
+}
+
+fn default_args() -> Args {
+    Args {
+        config: None,
         train: String::new(),
         test: None,
         target: "target".into(),
@@ -200,50 +280,10 @@ fn parse_args() -> Args {
         unary_operators: vec!["cos".into(), "sin".into()],
         binary_operators: vec!["+".into(), "sub".into(), "*".into(), "/".into()],
         selection: Selection::BestCost,
-    };
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--train" => out.train = take_value(&mut args, "--train"),
-            "--test" => out.test = Some(take_value(&mut args, "--test")),
-            "--target" => out.target = take_value(&mut args, "--target"),
-            "--features" => {
-                out.features = Some(
-                    take_value(&mut args, "--features")
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                        .collect(),
-                )
-            }
-            "--weight" => out.weight = Some(take_value(&mut args, "--weight")),
-            "--target-low" => out.target_low = Some(take_value(&mut args, "--target-low")),
-            "--target-high" => out.target_high = Some(take_value(&mut args, "--target-high")),
-            "--sequence-id" => out.sequence_id = Some(take_value(&mut args, "--sequence-id")),
-            "--niterations" => out.niterations = parse_value(&mut args, "--niterations"),
-            "--populations" => out.populations = parse_value(&mut args, "--populations"),
-            "--population-size" => out.population_size = parse_value(&mut args, "--population-size"),
-            "--cycles" => out.cycles = parse_value(&mut args, "--cycles"),
-            "--optimizer-iterations" => out.optimizer_iterations = parse_value(&mut args, "--optimizer-iterations"),
-            "--maxsize" => out.maxsize = parse_value(&mut args, "--maxsize"),
-            "--maxdepth" => out.maxdepth = parse_value(&mut args, "--maxdepth"),
-            "--max-delay" => out.max_delay = parse_value(&mut args, "--max-delay"),
-            "--delay-probability" => out.delay_probability = parse_value(&mut args, "--delay-probability"),
-            "--parsimony" => out.parsimony = parse_value(&mut args, "--parsimony"),
-            "--seed" => out.seed = parse_value(&mut args, "--seed"),
-            "--interval-targets" => out.interval_targets = true,
-            "--unary-operators" => out.unary_operators = parse_operator_list(&mut args, "--unary-operators"),
-            "--binary-operators" => out.binary_operators = parse_operator_list(&mut args, "--binary-operators"),
-            "--selection" => out.selection = parse_selection(&take_value(&mut args, "--selection")),
-            "--help" | "-h" => {
-                print_help();
-                std::process::exit(0);
-            }
-            other => panic!("unknown argument: {other}"),
-        }
     }
+}
 
+fn finalize_args(mut out: Args) -> Args {
     assert!(!out.train.is_empty(), "--train is required");
     if out.interval_targets {
         if out.target_low.is_none() {
@@ -258,7 +298,7 @@ fn parse_args() -> Args {
 
 fn print_help() {
     println!(
-        "sr_rs --train TRAIN.csv [--test TEST.csv] [--target target] [--features a,b,c]\n\
+        "sr_rs [--config CONFIG.json] --train TRAIN.csv [--test TEST.csv] [--target target] [--features a,b,c]\n\
          [--weight weight] [--target-low target_low --target-high target_high --interval-targets]\n\
          [--sequence-id seq] [--unary-operators cos,sin] [--binary-operators +,sub,*,/]\n\
          [--selection best-cost|best-loss|pareto-index=N|complexity=N]\n\
@@ -267,23 +307,275 @@ fn print_help() {
     );
 }
 
-fn take_value(args: &mut impl Iterator<Item = String>, name: &str) -> String {
-    args.next().unwrap_or_else(|| panic!("{name} requires a value"))
+fn config_path(argv: &[String]) -> Option<String> {
+    argv.iter()
+        .position(|arg| arg == "--config")
+        .map(|idx| value_at(argv, idx, "--config"))
 }
 
-fn parse_value<T: std::str::FromStr>(args: &mut impl Iterator<Item = String>, name: &str) -> T {
-    take_value(args, name)
-        .parse()
-        .unwrap_or_else(|_| panic!("bad value for {name}"))
+fn value_at(argv: &[String], idx: usize, name: &str) -> String {
+    argv.get(idx + 1)
+        .unwrap_or_else(|| panic!("{name} requires a value"))
+        .clone()
 }
 
-fn parse_operator_list(args: &mut impl Iterator<Item = String>, name: &str) -> Vec<String> {
-    take_value(args, name)
+fn parse_value_str<T: std::str::FromStr>(value: &str, name: &str) -> T {
+    value.parse().unwrap_or_else(|_| panic!("bad value for {name}"))
+}
+
+fn parse_csv_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_operator_string(value: &str) -> Vec<String> {
+    value
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(normalize_operator_name)
         .collect()
+}
+
+enum ConfigValue {
+    String(String),
+    Number(String),
+    Bool(bool),
+    StringArray(Vec<String>),
+}
+
+fn apply_config(path: &str, args: &mut Args) {
+    let text = fs::read_to_string(path).unwrap_or_else(|err| panic!("failed to read config {path}: {err}"));
+    let config = JsonParser::new(&text).parse_object();
+    for (key, value) in config {
+        let normalized = key.replace('-', "_");
+        match normalized.as_str() {
+            "train" => args.train = expect_config_string(&key, value),
+            "test" => args.test = Some(expect_config_string(&key, value)),
+            "target" => args.target = expect_config_string(&key, value),
+            "features" => args.features = Some(expect_config_string_array(&key, value)),
+            "weight" => args.weight = Some(expect_config_string(&key, value)),
+            "target_low" => args.target_low = Some(expect_config_string(&key, value)),
+            "target_high" => args.target_high = Some(expect_config_string(&key, value)),
+            "sequence_id" => args.sequence_id = Some(expect_config_string(&key, value)),
+            "niterations" => args.niterations = expect_config_number(&key, value),
+            "populations" => args.populations = expect_config_number(&key, value),
+            "population_size" => args.population_size = expect_config_number(&key, value),
+            "cycles" => args.cycles = expect_config_number(&key, value),
+            "optimizer_iterations" => args.optimizer_iterations = expect_config_number(&key, value),
+            "maxsize" => args.maxsize = expect_config_number(&key, value),
+            "maxdepth" => args.maxdepth = expect_config_number(&key, value),
+            "max_delay" => args.max_delay = expect_config_number(&key, value),
+            "delay_probability" => args.delay_probability = expect_config_number(&key, value),
+            "parsimony" => args.parsimony = expect_config_number(&key, value),
+            "seed" => args.seed = expect_config_number(&key, value),
+            "interval_targets" => args.interval_targets = expect_config_bool(&key, value),
+            "unary_operators" => args.unary_operators = expect_config_operator_array(&key, value),
+            "binary_operators" => args.binary_operators = expect_config_operator_array(&key, value),
+            "selection" => args.selection = parse_selection(&expect_config_string(&key, value)),
+            "config" => panic!("config files cannot include a nested config path"),
+            other => panic!("unknown config key: {other}"),
+        }
+    }
+}
+
+fn expect_config_string(key: &str, value: ConfigValue) -> String {
+    match value {
+        ConfigValue::String(value) => value,
+        _ => panic!("config key {key} must be a string"),
+    }
+}
+
+fn expect_config_string_array(key: &str, value: ConfigValue) -> Vec<String> {
+    match value {
+        ConfigValue::StringArray(values) => values,
+        ConfigValue::String(value) => parse_csv_list(&value),
+        _ => panic!("config key {key} must be a string array"),
+    }
+}
+
+fn expect_config_operator_array(key: &str, value: ConfigValue) -> Vec<String> {
+    expect_config_string_array(key, value)
+        .into_iter()
+        .map(|name| normalize_operator_name(&name))
+        .collect()
+}
+
+fn expect_config_bool(key: &str, value: ConfigValue) -> bool {
+    match value {
+        ConfigValue::Bool(value) => value,
+        _ => panic!("config key {key} must be a boolean"),
+    }
+}
+
+fn expect_config_number<T: std::str::FromStr>(key: &str, value: ConfigValue) -> T {
+    match value {
+        ConfigValue::Number(value) => value
+            .parse()
+            .unwrap_or_else(|_| panic!("config key {key} has a bad number")),
+        _ => panic!("config key {key} must be a number"),
+    }
+}
+
+struct JsonParser<'a> {
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, pos: 0 }
+    }
+
+    fn parse_object(&mut self) -> HashMap<String, ConfigValue> {
+        let mut out = HashMap::new();
+        self.skip_ws();
+        self.expect_byte(b'{');
+        loop {
+            self.skip_ws();
+            if self.consume_byte(b'}') {
+                break;
+            }
+            let key = self.parse_string();
+            self.skip_ws();
+            self.expect_byte(b':');
+            let value = self.parse_value();
+            out.insert(key, value);
+            self.skip_ws();
+            if self.consume_byte(b'}') {
+                break;
+            }
+            self.expect_byte(b',');
+        }
+        self.skip_ws();
+        assert!(self.is_done(), "trailing content in config JSON");
+        out
+    }
+
+    fn parse_value(&mut self) -> ConfigValue {
+        self.skip_ws();
+        match self.peek_byte() {
+            Some(b'"') => ConfigValue::String(self.parse_string()),
+            Some(b'[') => ConfigValue::StringArray(self.parse_string_array()),
+            Some(b't') => {
+                self.expect_literal("true");
+                ConfigValue::Bool(true)
+            }
+            Some(b'f') => {
+                self.expect_literal("false");
+                ConfigValue::Bool(false)
+            }
+            Some(b'-' | b'0'..=b'9') => ConfigValue::Number(self.parse_number()),
+            _ => panic!("unsupported config JSON value"),
+        }
+    }
+
+    fn parse_string_array(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.expect_byte(b'[');
+        loop {
+            self.skip_ws();
+            if self.consume_byte(b']') {
+                break;
+            }
+            out.push(self.parse_string());
+            self.skip_ws();
+            if self.consume_byte(b']') {
+                break;
+            }
+            self.expect_byte(b',');
+        }
+        out
+    }
+
+    fn parse_string(&mut self) -> String {
+        self.expect_byte(b'"');
+        let mut out = String::new();
+        while let Some(byte) = self.next_byte() {
+            match byte {
+                b'"' => return out,
+                b'\\' => out.push(self.parse_escape()),
+                byte if byte < 0x20 => panic!("control character in config string"),
+                byte => out.push(byte as char),
+            }
+        }
+        panic!("unterminated config string")
+    }
+
+    fn parse_escape(&mut self) -> char {
+        match self.next_byte().unwrap_or_else(|| panic!("unterminated config escape")) {
+            b'"' => '"',
+            b'\\' => '\\',
+            b'/' => '/',
+            b'b' => '\u{0008}',
+            b'f' => '\u{000c}',
+            b'n' => '\n',
+            b'r' => '\r',
+            b't' => '\t',
+            b'u' => panic!("unicode escapes are not supported in sr_rs config strings"),
+            other => panic!("bad config string escape: {}", other as char),
+        }
+    }
+
+    fn parse_number(&mut self) -> String {
+        let start = self.pos;
+        while let Some(byte) = self.peek_byte() {
+            if byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        self.text[start..self.pos].to_string()
+    }
+
+    fn expect_literal(&mut self, literal: &str) {
+        assert!(
+            self.text[self.pos..].starts_with(literal),
+            "expected literal {literal} in config JSON"
+        );
+        self.pos += literal.len();
+    }
+
+    fn expect_byte(&mut self, expected: u8) {
+        let found = self
+            .next_byte()
+            .unwrap_or_else(|| panic!("expected {}", expected as char));
+        assert_eq!(found, expected, "expected {}", expected as char);
+    }
+
+    fn consume_byte(&mut self, expected: u8) -> bool {
+        if self.peek_byte() == Some(expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn next_byte(&mut self) -> Option<u8> {
+        let byte = self.peek_byte()?;
+        self.pos += 1;
+        Some(byte)
+    }
+
+    fn peek_byte(&self) -> Option<u8> {
+        self.text.as_bytes().get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek_byte(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.pos += 1;
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        self.pos == self.text.len()
+    }
 }
 
 fn normalize_operator_name(name: &str) -> String {
