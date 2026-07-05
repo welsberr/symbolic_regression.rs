@@ -50,7 +50,11 @@ fn randomize_mutation_can_succeed_below_size_3() {
 
     let mut evaluator = Evaluator::<T, D>::new(dataset.n_rows);
     let baseline_loss = if options.use_baseline {
-        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(&dataset, options.loss.as_ref())
+        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(
+            &dataset,
+            options.loss.as_ref(),
+            options.use_interval_targets,
+        )
     } else {
         None
     };
@@ -188,7 +192,11 @@ fn add_node_includes_append_at_leaf_move() {
 
     let mut evaluator = Evaluator::<T, D>::new(dataset.n_rows);
     let baseline_loss = if options.use_baseline {
-        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(&dataset, options.loss.as_ref())
+        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(
+            &dataset,
+            options.loss.as_ref(),
+            options.use_interval_targets,
+        )
     } else {
         None
     };
@@ -284,7 +292,11 @@ fn mutate_operator_can_be_a_noop_and_still_succeeds() {
 
     let mut evaluator = Evaluator::<T, D>::new(dataset.n_rows);
     let baseline_loss = if options.use_baseline {
-        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(&dataset, options.loss.as_ref())
+        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(
+            &dataset,
+            options.loss.as_ref(),
+            options.use_interval_targets,
+        )
     } else {
         None
     };

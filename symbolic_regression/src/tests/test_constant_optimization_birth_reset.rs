@@ -46,7 +46,11 @@ fn optimize_constants_resets_birth_on_improvement() {
     let mut evaluator = Evaluator::<T, D>::new(dataset.n_rows);
     let mut grad_ctx = dynamic_expressions::GradContext::<T, D>::new(dataset.n_rows);
     let baseline_loss = if options.use_baseline {
-        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(&dataset, options.loss.as_ref())
+        crate::loss_functions::baseline_loss_from_zero_expression::<T, TestOps, D>(
+            &dataset,
+            options.loss.as_ref(),
+            options.use_interval_targets,
+        )
     } else {
         None
     };

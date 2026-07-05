@@ -12,9 +12,91 @@ pub trait LossFn<T: Float>: Send + Sync {
     fn dloss_dyhat(&self, yhat: &[T], y: &[T], w: Option<&[T]>, out: &mut [T]);
 }
 
+pub fn interval_mse_loss<T: Float>(yhat: &[T], low: &[T], high: &[T], w: Option<&[T]>) -> T {
+    assert_eq!(yhat.len(), low.len());
+    assert_eq!(low.len(), high.len());
+    match w {
+        None => {
+            if yhat.is_empty() {
+                return T::zero();
+            }
+            let n = T::from(yhat.len()).unwrap();
+            yhat.iter()
+                .copied()
+                .zip_eq(low.iter().copied())
+                .zip_eq(high.iter().copied())
+                .map(|((pred, lo), hi)| {
+                    let r = interval_residual(pred, lo, hi);
+                    r * r
+                })
+                .fold(T::zero(), |acc, v| acc + v)
+                / n
+        }
+        Some(w) => {
+            assert_eq!(w.len(), yhat.len());
+            let sum_w = w.iter().copied().fold(T::zero(), |a, b| a + b);
+            if sum_w == T::zero() {
+                return T::zero();
+            }
+            yhat.iter()
+                .copied()
+                .zip_eq(low.iter().copied())
+                .zip_eq(high.iter().copied())
+                .zip_eq(w.iter().copied())
+                .map(|(((pred, lo), hi), wi)| {
+                    let r = interval_residual(pred, lo, hi);
+                    wi * r * r
+                })
+                .fold(T::zero(), |acc, v| acc + v)
+                / sum_w
+        }
+    }
+}
+
+pub fn interval_mse_dloss_dyhat<T: Float>(yhat: &[T], low: &[T], high: &[T], w: Option<&[T]>, out: &mut [T]) {
+    assert_eq!(yhat.len(), low.len());
+    assert_eq!(low.len(), high.len());
+    assert_eq!(out.len(), yhat.len());
+    match w {
+        None => {
+            if yhat.is_empty() {
+                out.fill(T::zero());
+                return;
+            }
+            let scale = T::from(2.0).unwrap() / T::from(yhat.len()).unwrap();
+            for (((o, &pred), &lo), &hi) in out.iter_mut().zip_eq(yhat).zip_eq(low).zip_eq(high) {
+                *o = scale * interval_residual(pred, lo, hi);
+            }
+        }
+        Some(w) => {
+            assert_eq!(w.len(), yhat.len());
+            let sum_w = w.iter().copied().fold(T::zero(), |a, b| a + b);
+            if sum_w == T::zero() {
+                out.fill(T::zero());
+                return;
+            }
+            let scale = T::from(2.0).unwrap() / sum_w;
+            for ((((o, &pred), &lo), &hi), &wi) in out.iter_mut().zip_eq(yhat).zip_eq(low).zip_eq(high).zip_eq(w) {
+                *o = scale * wi * interval_residual(pred, lo, hi);
+            }
+        }
+    }
+}
+
+fn interval_residual<T: Float>(pred: T, low: T, high: T) -> T {
+    if pred < low {
+        pred - low
+    } else if pred > high {
+        pred - high
+    } else {
+        T::zero()
+    }
+}
+
 pub fn baseline_loss_from_zero_expression<T: Float, Ops, const D: usize>(
     dataset: &Dataset<T>,
     loss: &dyn LossFn<T>,
+    use_interval_targets: bool,
 ) -> Option<T>
 where
     Ops: OperatorSet<T = T>,
@@ -36,7 +118,11 @@ where
         return None;
     }
 
-    let base = loss.loss(&yhat, dataset.y_slice(), dataset.weights_slice());
+    let base = match (use_interval_targets, dataset.target_bounds_slice()) {
+        (true, Some((low, high))) => interval_mse_loss(&yhat, low, high, dataset.weights_slice()),
+        (true, None) => return None,
+        (false, _) => loss.loss(&yhat, dataset.y_slice(), dataset.weights_slice()),
+    };
     base.is_finite().then_some(base)
 }
 

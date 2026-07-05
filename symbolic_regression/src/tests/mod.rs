@@ -8,6 +8,7 @@ mod test_delay_warmup;
 mod test_early_stop;
 mod test_equation_search_runs;
 mod test_frequency_in_tournament;
+mod test_interval_targets;
 mod test_loss;
 mod test_mutate_constant_regressions;
 mod test_mutation_regressions;

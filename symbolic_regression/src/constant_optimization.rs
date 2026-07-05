@@ -6,6 +6,7 @@ use fastrand::Rng;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 
 use crate::dataset::{Dataset, TaggedDataset};
+use crate::loss_functions::{interval_mse_dloss_dyhat, interval_mse_loss};
 use crate::optim::{BackTracking, Objective, OptimOptions, bfgs_minimize, newton_1d_minimize};
 use crate::options::Options;
 use crate::pop_member::{Evaluator, PopMember, get_birth_order};
@@ -81,11 +82,16 @@ impl<'a, T: Float + AddAssign, const D: usize> EvalWorkspace<'a, T, D> {
 
         let max_delay = node_utils::max_delay(&expr.nodes);
         let loss = if max_delay == 0 {
-            self.options.loss.loss(
-                &self.evaluator.yhat,
-                self.dataset.y.as_slice().unwrap(),
-                self.dataset.weights_slice(),
-            )
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_loss(&self.evaluator.yhat, low, high, self.dataset.weights_slice())
+            } else {
+                self.options.loss.loss(
+                    &self.evaluator.yhat,
+                    self.dataset.y.as_slice().unwrap(),
+                    self.dataset.weights_slice(),
+                )
+            }
         } else if self.dataset.sequence_ids.is_none() {
             let valid_start = max_delay.min(self.dataset.n_rows);
             if valid_start >= self.dataset.n_rows {
@@ -97,20 +103,35 @@ impl<'a, T: Float + AddAssign, const D: usize> EvalWorkspace<'a, T, D> {
                 .as_ref()
                 .and_then(|w| w.as_slice())
                 .map(|w| &w[valid_start..]);
-            self.options.loss.loss(
-                &self.evaluator.yhat[valid_start..],
-                &self.dataset.y.as_slice().unwrap()[valid_start..],
-                weights,
-            )
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_loss(
+                    &self.evaluator.yhat[valid_start..],
+                    &low[valid_start..],
+                    &high[valid_start..],
+                    weights,
+                )
+            } else {
+                self.options.loss.loss(
+                    &self.evaluator.yhat[valid_start..],
+                    &self.dataset.y.as_slice().unwrap()[valid_start..],
+                    weights,
+                )
+            }
         } else {
             if !self.fill_delay_weights(max_delay) {
                 return None;
             }
-            self.options.loss.loss(
-                &self.evaluator.yhat,
-                self.dataset.y.as_slice().unwrap(),
-                Some(&self.loss_weights),
-            )
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_loss(&self.evaluator.yhat, low, high, Some(&self.loss_weights))
+            } else {
+                self.options.loss.loss(
+                    &self.evaluator.yhat,
+                    self.dataset.y.as_slice().unwrap(),
+                    Some(&self.loss_weights),
+                )
+            }
         };
         if !loss.is_finite() {
             return None;
@@ -145,9 +166,14 @@ impl<'a, T: Float + AddAssign, const D: usize> EvalWorkspace<'a, T, D> {
 
         let max_delay = node_utils::max_delay(&expr.nodes);
         let loss = if max_delay == 0 {
-            self.options
-                .loss
-                .loss(&yhat, self.dataset.y.as_slice().unwrap(), self.dataset.weights_slice())
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_loss(&yhat, low, high, self.dataset.weights_slice())
+            } else {
+                self.options
+                    .loss
+                    .loss(&yhat, self.dataset.y.as_slice().unwrap(), self.dataset.weights_slice())
+            }
         } else if self.dataset.sequence_ids.is_none() {
             let valid_start = max_delay.min(self.dataset.n_rows);
             if valid_start >= self.dataset.n_rows {
@@ -159,30 +185,45 @@ impl<'a, T: Float + AddAssign, const D: usize> EvalWorkspace<'a, T, D> {
                 .as_ref()
                 .and_then(|w| w.as_slice())
                 .map(|w| &w[valid_start..]);
-            self.options.loss.loss(
-                &yhat[valid_start..],
-                &self.dataset.y.as_slice().unwrap()[valid_start..],
-                weights,
-            )
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_loss(&yhat[valid_start..], &low[valid_start..], &high[valid_start..], weights)
+            } else {
+                self.options.loss.loss(
+                    &yhat[valid_start..],
+                    &self.dataset.y.as_slice().unwrap()[valid_start..],
+                    weights,
+                )
+            }
         } else {
             if !self.fill_delay_weights(max_delay) {
                 return None;
             }
-            self.options
-                .loss
-                .loss(&yhat, self.dataset.y.as_slice().unwrap(), Some(&self.loss_weights))
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_loss(&yhat, low, high, Some(&self.loss_weights))
+            } else {
+                self.options
+                    .loss
+                    .loss(&yhat, self.dataset.y.as_slice().unwrap(), Some(&self.loss_weights))
+            }
         };
         if !loss.is_finite() {
             return None;
         }
 
         if max_delay == 0 {
-            self.options.loss.dloss_dyhat(
-                &yhat,
-                self.dataset.y.as_slice().unwrap(),
-                self.dataset.weights_slice(),
-                &mut self.dloss_dyhat,
-            );
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_dloss_dyhat(&yhat, low, high, self.dataset.weights_slice(), &mut self.dloss_dyhat);
+            } else {
+                self.options.loss.dloss_dyhat(
+                    &yhat,
+                    self.dataset.y.as_slice().unwrap(),
+                    self.dataset.weights_slice(),
+                    &mut self.dloss_dyhat,
+                );
+            }
         } else if self.dataset.sequence_ids.is_none() {
             let valid_start = max_delay.min(self.dataset.n_rows);
             let weights = self
@@ -191,20 +232,36 @@ impl<'a, T: Float + AddAssign, const D: usize> EvalWorkspace<'a, T, D> {
                 .as_ref()
                 .and_then(|w| w.as_slice())
                 .map(|w| &w[valid_start..]);
-            self.options.loss.dloss_dyhat(
-                &yhat[valid_start..],
-                &self.dataset.y.as_slice().unwrap()[valid_start..],
-                weights,
-                &mut self.dloss_dyhat[valid_start..],
-            );
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_dloss_dyhat(
+                    &yhat[valid_start..],
+                    &low[valid_start..],
+                    &high[valid_start..],
+                    weights,
+                    &mut self.dloss_dyhat[valid_start..],
+                );
+            } else {
+                self.options.loss.dloss_dyhat(
+                    &yhat[valid_start..],
+                    &self.dataset.y.as_slice().unwrap()[valid_start..],
+                    weights,
+                    &mut self.dloss_dyhat[valid_start..],
+                );
+            }
             self.dloss_dyhat[..valid_start].fill(T::zero());
         } else {
-            self.options.loss.dloss_dyhat(
-                &yhat,
-                self.dataset.y.as_slice().unwrap(),
-                Some(&self.loss_weights),
-                &mut self.dloss_dyhat,
-            );
+            if self.options.use_interval_targets {
+                let (low, high) = self.dataset.target_bounds_slice()?;
+                interval_mse_dloss_dyhat(&yhat, low, high, Some(&self.loss_weights), &mut self.dloss_dyhat);
+            } else {
+                self.options.loss.dloss_dyhat(
+                    &yhat,
+                    self.dataset.y.as_slice().unwrap(),
+                    Some(&self.loss_weights),
+                    &mut self.dloss_dyhat,
+                );
+            }
         }
 
         for (ci, gout) in grad_out.iter_mut().enumerate() {
