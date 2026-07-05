@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use dynamic_expressions::{StringTreeOptions, delay_validity_mask};
 use ndarray::{Array1, Array2};
+use symbolic_regression::PopMember;
 use symbolic_regression::prelude::*;
 
 const D: usize = 3;
@@ -29,6 +30,17 @@ struct Args {
     parsimony: f64,
     seed: u64,
     interval_targets: bool,
+    unary_operators: Vec<String>,
+    binary_operators: Vec<String>,
+    selection: Selection,
+}
+
+#[derive(Clone)]
+enum Selection {
+    BestCost,
+    BestLoss,
+    ParetoIndex(usize),
+    Complexity(usize),
 }
 
 struct Frame {
@@ -54,7 +66,8 @@ fn main() {
         .unwrap_or_else(|| infer_features(&train.headers, &args));
     let train_arrays = arrays(&train, &features, &args);
     let dataset = dataset_from_arrays(train_arrays, features.clone(), &args);
-    let operators = BuiltinOpsF32::from_names(["cos", "sin", "+", "sub", "*", "/"]).unwrap();
+    let operator_names = operator_names(&args);
+    let operators = BuiltinOpsF32::from_names(operator_names.iter().map(String::as_str)).unwrap();
     let options = Options::<f32, D> {
         seed: args.seed,
         niterations: args.niterations,
@@ -77,9 +90,11 @@ fn main() {
     let start = Instant::now();
     let result = equation_search::<f32, BuiltinOpsF32, D>(&dataset, &options);
     let elapsed = start.elapsed().as_secs_f64();
+    let pareto = result.hall_of_fame.pareto_front();
+    let (selected, selected_idx) = select_member(&pareto, &result.best, &args.selection);
 
     let best_expr = string_tree(
-        &result.best.expr,
+        &selected.expr,
         StringTreeOptions {
             variable_names: Some(&features),
             ..Default::default()
@@ -91,11 +106,19 @@ fn main() {
     println!("  \"status\": \"ok\",");
     println!("  \"wall_seconds\": {elapsed},");
     println!("  \"feature_columns\": {},", json_string_array(&features));
-    println!("  \"train_loss\": {},", result.best.loss);
-    println!("  \"best\": {{");
-    println!("    \"complexity\": {},", result.best.complexity);
-    println!("    \"loss\": {},", result.best.loss);
-    println!("    \"cost\": {},", result.best.cost);
+    println!("  \"unary_operators\": {},", json_string_array(&args.unary_operators));
+    println!("  \"binary_operators\": {},", json_string_array(&args.binary_operators));
+    println!("  \"selection\": {},", json_string(&args.selection.to_string()));
+    println!("  \"train_loss\": {},", selected.loss);
+    println!("  \"selected\": {{");
+    if let Some(idx) = selected_idx {
+        println!("    \"index\": {},", idx + 1);
+    } else {
+        println!("    \"index\": null,");
+    }
+    println!("    \"complexity\": {},", selected.complexity);
+    println!("    \"loss\": {},", selected.loss);
+    println!("    \"cost\": {},", selected.cost);
     println!("    \"expression\": {}", json_string(&best_expr));
     println!("  }},");
 
@@ -103,8 +126,8 @@ fn main() {
         let test = read_csv(test_path);
         let test_arrays = arrays(&test, &features, &args);
         let (pred, complete) =
-            eval_tree_array::<f32, BuiltinOpsF32, D>(&result.best.expr, test_arrays.x.view(), &EvalOptions::default());
-        let valid = delay_validity_mask(&result.best.expr.nodes, pred.len(), test_arrays.sequence_ids.as_deref());
+            eval_tree_array::<f32, BuiltinOpsF32, D>(&selected.expr, test_arrays.x.view(), &EvalOptions::default());
+        let valid = delay_validity_mask(&selected.expr.nodes, pred.len(), test_arrays.sequence_ids.as_deref());
         let metrics = metrics(
             &pred,
             test_arrays.y.as_slice().unwrap(),
@@ -127,8 +150,7 @@ fn main() {
         println!("  \"test\": null,");
     }
 
-    let pareto = result.hall_of_fame.pareto_front();
-    println!("  \"pareto\": [");
+    println!("  \"equations\": [");
     for (idx, member) in pareto.iter().enumerate() {
         let expr = string_tree(
             &member.expr,
@@ -139,7 +161,9 @@ fn main() {
         );
         let comma = if idx + 1 == pareto.len() { "" } else { "," };
         println!(
-            "    {{\"complexity\": {}, \"loss\": {}, \"cost\": {}, \"expression\": {}}}{comma}",
+            "    {{\"index\": {}, \"is_selected\": {}, \"complexity\": {}, \"loss\": {}, \"cost\": {}, \"equation\": {}}}{comma}",
+            idx + 1,
+            Some(idx) == selected_idx,
             member.complexity,
             member.loss,
             member.cost,
@@ -173,6 +197,9 @@ fn parse_args() -> Args {
         parsimony: 0.0,
         seed: 1009,
         interval_targets: false,
+        unary_operators: vec!["cos".into(), "sin".into()],
+        binary_operators: vec!["+".into(), "sub".into(), "*".into(), "/".into()],
+        selection: Selection::BestCost,
     };
 
     while let Some(arg) = args.next() {
@@ -206,6 +233,9 @@ fn parse_args() -> Args {
             "--parsimony" => out.parsimony = parse_value(&mut args, "--parsimony"),
             "--seed" => out.seed = parse_value(&mut args, "--seed"),
             "--interval-targets" => out.interval_targets = true,
+            "--unary-operators" => out.unary_operators = parse_operator_list(&mut args, "--unary-operators"),
+            "--binary-operators" => out.binary_operators = parse_operator_list(&mut args, "--binary-operators"),
+            "--selection" => out.selection = parse_selection(&take_value(&mut args, "--selection")),
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -230,7 +260,9 @@ fn print_help() {
     println!(
         "sr_rs --train TRAIN.csv [--test TEST.csv] [--target target] [--features a,b,c]\n\
          [--weight weight] [--target-low target_low --target-high target_high --interval-targets]\n\
-         [--sequence-id seq] [--max-delay N --delay-probability P] [search options]\n\n\
+         [--sequence-id seq] [--unary-operators cos,sin] [--binary-operators +,sub,*,/]\n\
+         [--selection best-cost|best-loss|pareto-index=N|complexity=N]\n\
+         [--max-delay N --delay-probability P] [search options]\n\n\
          Outputs JSON to stdout."
     );
 }
@@ -243,6 +275,95 @@ fn parse_value<T: std::str::FromStr>(args: &mut impl Iterator<Item = String>, na
     take_value(args, name)
         .parse()
         .unwrap_or_else(|_| panic!("bad value for {name}"))
+}
+
+fn parse_operator_list(args: &mut impl Iterator<Item = String>, name: &str) -> Vec<String> {
+    take_value(args, name)
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_operator_name)
+        .collect()
+}
+
+fn normalize_operator_name(name: &str) -> String {
+    match name {
+        "-" => "sub".into(),
+        other => other.into(),
+    }
+}
+
+fn parse_selection(value: &str) -> Selection {
+    match value {
+        "best-cost" => Selection::BestCost,
+        "best-loss" => Selection::BestLoss,
+        _ if value.starts_with("pareto-index=") => {
+            Selection::ParetoIndex(parse_selection_usize(value, "pareto-index="))
+        }
+        _ if value.starts_with("complexity=") => Selection::Complexity(parse_selection_usize(value, "complexity=")),
+        _ => panic!("bad value for --selection: {value}"),
+    }
+}
+
+fn parse_selection_usize(value: &str, prefix: &str) -> usize {
+    value[prefix.len()..]
+        .parse()
+        .unwrap_or_else(|_| panic!("bad value for --selection: {value}"))
+}
+
+impl std::fmt::Display for Selection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Selection::BestCost => write!(f, "best-cost"),
+            Selection::BestLoss => write!(f, "best-loss"),
+            Selection::ParetoIndex(idx) => write!(f, "pareto-index={idx}"),
+            Selection::Complexity(complexity) => write!(f, "complexity={complexity}"),
+        }
+    }
+}
+
+fn operator_names(args: &Args) -> Vec<String> {
+    args.unary_operators
+        .iter()
+        .chain(args.binary_operators.iter())
+        .cloned()
+        .collect()
+}
+
+fn select_member<'a>(
+    pareto: &'a [PopMember<f32, BuiltinOpsF32, D>],
+    fallback: &'a PopMember<f32, BuiltinOpsF32, D>,
+    selection: &Selection,
+) -> (&'a PopMember<f32, BuiltinOpsF32, D>, Option<usize>) {
+    let selected_idx = match selection {
+        Selection::BestCost => pareto
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.cost.total_cmp(&b.cost))
+            .map(|(idx, _)| idx),
+        Selection::BestLoss => pareto
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.loss.total_cmp(&b.loss))
+            .map(|(idx, _)| idx),
+        Selection::ParetoIndex(index) => {
+            assert!(*index > 0, "pareto-index is 1-based and must be greater than zero");
+            let idx = *index - 1;
+            assert!(
+                idx < pareto.len(),
+                "pareto-index {index} is outside the equations table"
+            );
+            Some(idx)
+        }
+        Selection::Complexity(complexity) => pareto
+            .iter()
+            .position(|member| member.complexity == *complexity)
+            .or_else(|| panic!("no equation with complexity {complexity}")),
+    };
+
+    selected_idx
+        .map(|idx| (&pareto[idx], Some(idx)))
+        .unwrap_or((fallback, None))
 }
 
 fn read_csv(path: &str) -> Frame {
