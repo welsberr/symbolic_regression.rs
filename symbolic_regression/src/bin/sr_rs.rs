@@ -104,12 +104,17 @@ fn main() {
 
     println!("{{");
     println!("  \"engine\": \"sr.rs\",");
+    println!("  \"package_version\": {},", json_string(env!("CARGO_PKG_VERSION")));
+    println!("  \"numeric_type\": \"f32\",");
+    println!("  \"expression_arity\": {D},");
+    println!("  \"deterministic\": true,");
     println!("  \"status\": \"ok\",");
     if let Some(config) = &args.config {
         println!("  \"config\": {},", json_string(config));
     } else {
         println!("  \"config\": null,");
     }
+    print_resolved_config(&args, &features);
     println!("  \"wall_seconds\": {elapsed},");
     println!("  \"feature_columns\": {},", json_string_array(&features));
     println!("  \"unary_operators\": {},", json_string_array(&args.unary_operators));
@@ -252,6 +257,46 @@ fn parse_args() -> Args {
     }
 
     finalize_args(out)
+}
+
+fn print_resolved_config(args: &Args, features: &[String]) {
+    println!("  \"resolved_config\": {{");
+    println!("    \"train\": {},", json_string(&args.train));
+    println!("    \"test\": {},", json_option_string(args.test.as_deref()));
+    println!("    \"target\": {},", json_string(&args.target));
+    println!("    \"features\": {},", json_string_array(features));
+    println!("    \"weight\": {},", json_option_string(args.weight.as_deref()));
+    println!(
+        "    \"target_low\": {},",
+        json_option_string(args.target_low.as_deref())
+    );
+    println!(
+        "    \"target_high\": {},",
+        json_option_string(args.target_high.as_deref())
+    );
+    println!(
+        "    \"sequence_id\": {},",
+        json_option_string(args.sequence_id.as_deref())
+    );
+    println!("    \"niterations\": {},", args.niterations);
+    println!("    \"populations\": {},", args.populations);
+    println!("    \"population_size\": {},", args.population_size);
+    println!("    \"cycles\": {},", args.cycles);
+    println!("    \"optimizer_iterations\": {},", args.optimizer_iterations);
+    println!("    \"maxsize\": {},", args.maxsize);
+    println!("    \"maxdepth\": {},", args.maxdepth);
+    println!("    \"max_delay\": {},", args.max_delay);
+    println!("    \"delay_probability\": {},", args.delay_probability);
+    println!("    \"parsimony\": {},", args.parsimony);
+    println!("    \"seed\": {},", args.seed);
+    println!("    \"interval_targets\": {},", args.interval_targets);
+    println!("    \"unary_operators\": {},", json_string_array(&args.unary_operators));
+    println!(
+        "    \"binary_operators\": {},",
+        json_string_array(&args.binary_operators)
+    );
+    println!("    \"selection\": {}", json_string(&args.selection.to_string()));
+    println!("  }},");
 }
 
 fn default_args() -> Args {
@@ -857,6 +902,10 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn json_option_string(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".into())
 }
 
 fn json_string_array(values: &[String]) -> String {
